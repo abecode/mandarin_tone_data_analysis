@@ -48,13 +48,20 @@ def parse_label(label: str) -> tuple[str, str]:
     return match.group("base"), match.group("tone") or ""
 
 
-def parse_recording(path: Path, root: Path, dataset: str) -> dict[str, str]:
+def parse_recording(path: Path, root: Path, dataset: str, speaker_name: str | None = None) -> dict[str, str]:
     relative = path.relative_to(root)
     parts = relative.parts
     # Preserve the uppercase T/Z in canonical UTC timestamps.
     stem = path.stem
-    speaker = parts[0] if dataset == "tone_labeled" and len(parts) > 1 else "oli_2"
-    session = next((part for part in parts[:-1] if part.startswith("session_")), "")
+    speaker = speaker_name or (parts[0] if dataset == "tone_labeled" and len(parts) > 1 else "oli_2")
+    session = next(
+        (
+            part
+            for part in parts[:-1]
+            if part.startswith("session_") or re.fullmatch(r"[0-9a-f-]{36}", part)
+        ),
+        "",
+    )
 
     values = {field: "" for field in FIELDS}
     values.update(
@@ -122,15 +129,22 @@ def main() -> None:
     args = parser.parse_args()
 
     sources = [
-        (args.raw_root / "audio_fixed_abe", "tone_labeled", {".wav", ".webm"}),
-        (args.raw_root / "correct_audio_oli_2", "tone_unspecified", {".wav", ".webm"}),
+        (args.raw_root / "audio_fixed_abe", "tone_labeled", {".wav", ".webm"}, None),
+        (args.raw_root / "correct_audio_oli_2", "tone_unspecified", {".wav", ".webm"}, "oli_2"),
+        (
+            args.raw_root
+            / "Yue/data/media/recordings/fa2e81d6-2ba5-42ca-9d50-bc2ee0ed1d1f",
+            "tone_labeled_yue",
+            {".wav", ".webm"},
+            "Yue",
+        ),
     ]
     rows: list[dict[str, str]] = []
-    for root, dataset, extensions in sources:
+    for root, dataset, extensions, speaker_name in sources:
         if not root.exists():
             continue
         for path in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in extensions):
-            rows.append(parse_recording(path, root, dataset))
+            rows.append(parse_recording(path, root, dataset, speaker_name))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8") as handle:

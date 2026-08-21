@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 
 import torch
 import whisper
+import static_ffmpeg
 
 
 def completed_ids(path: Path) -> set[str]:
@@ -19,7 +21,9 @@ def completed_ids(path: Path) -> set[str]:
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             try:
-                done.add(json.loads(line)["path"])
+                row = json.loads(line)
+                if row.get("status") == "ok":
+                    done.add(row["path"])
             except (json.JSONDecodeError, KeyError):
                 continue
     return done
@@ -30,12 +34,29 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, default=Path("data/recordings.csv"))
     parser.add_argument("--output", type=Path, default=Path("results/whisper_large_v3.jsonl"))
     parser.add_argument("--model", default="large-v3")
+    parser.add_argument("--model-dir", type=Path, default=Path("models/whisper"))
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        help="Manifest dataset to process; repeat for multiple cohorts (default: tone_labeled)",
+    )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--limit", type=int, help="Transcribe only this many new files (smoke tests).")
     args = parser.parse_args()
 
+    # Whisper invokes `ffmpeg` as a subprocess. Supply a project-independent
+    # binary on compute nodes where FFmpeg is not installed system-wide.
+    local_ffmpeg = Path("models/linux/ffmpeg")
+    if local_ffmpeg.exists():
+        os.environ["PATH"] = os.pathsep.join(
+            [str(local_ffmpeg.parent.resolve()), os.environ.get("PATH", "")]
+        )
+    else:
+        static_ffmpeg.add_paths()
+
+    selected_datasets = set(args.dataset or ["tone_labeled"])
     with args.manifest.open(newline="", encoding="utf-8") as handle:
-        rows = [row for row in csv.DictReader(handle) if row["dataset"] == "tone_labeled"]
+        rows = [row for row in csv.DictReader(handle) if row["dataset"] in selected_datasets]
 
     done = completed_ids(args.output)
     pending = [row for row in rows if row["path"] not in done]
@@ -43,7 +64,8 @@ def main() -> None:
         pending = pending[: args.limit]
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    model = whisper.load_model(args.model, device=args.device)
+    args.model_dir.mkdir(parents=True, exist_ok=True)
+    model = whisper.load_model(args.model, device=args.device, download_root=str(args.model_dir))
     print(f"Loaded {args.model} on {args.device}; {len(pending)} recordings pending.")
 
     with args.output.open("a", encoding="utf-8") as handle:
@@ -55,6 +77,7 @@ def main() -> None:
                     task="transcribe",
                     temperature=0,
                     condition_on_previous_text=False,
+                    fp16=args.device.startswith("cuda"),
                     verbose=False,
                 )
                 segments = result.get("segments", [])
