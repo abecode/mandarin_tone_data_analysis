@@ -241,3 +241,32 @@ python3 scripts/audit_webm_decode.py --sample-size 100
 
 The audit compares decoded duration to the container duration and retains all
 decoder warnings in `results/webm_decode_audit.tsv`.
+
+### Checkpoint format
+
+Classifier checkpoints use a versioned, top-level dictionary. Format 0 has a
+top-level `format` value of `0`, exactly one model-state entry (`state_dict` for
+frozen-encoder heads or `trainable_state_dict` for partial fine-tuning), and a
+`metrics` dictionary. Checkpoints are written atomically so an interrupted save
+does not replace a valid earlier file.
+
+Inspect legacy checkpoints without changing them, then migrate them in place:
+
+```
+python3 scripts/migrate_checkpoints.py
+python3 scripts/migrate_checkpoints.py --apply
+```
+
+The loader treats a missing `format` key as legacy format 0, allowing the
+migration tool to read checkpoints created before versioning was introduced.
+
+## Development checks
+
+Install the development tools and run the repository checks with:
+
+```
+python3 -m pip install -r requirements-dev.txt
+python3 -m ruff format --check scripts tests
+python3 -m ruff check scripts tests
+python3 -m unittest discover -s tests -v
+```

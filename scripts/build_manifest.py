@@ -8,7 +8,6 @@ import csv
 import re
 from pathlib import Path
 
-
 CANONICAL_RE = re.compile(
     r"^(?P<index>\d{4})_(?P<attempt>\d{2})_(?P<label>[a-z]+(?:[1-5])?)_"
     r"(?P<timestamp>\d{8}T\d{6}Z)_(?P<id>[0-9a-f-]{36})$"
@@ -21,9 +20,7 @@ LEGACY_RE = re.compile(
     r"^(?P<index>\d{4})_(?P<label>[a-z]+(?:[1-5])?)_"
     r"(?:(?:unspecified|row\d+)_)?(?P<base>[a-z]+)_(?P<id>[0-9a-f]{8})$"
 )
-UUID_RE = re.compile(
-    r"^(?P<id>[0-9a-f-]{36})_(?P<label>[a-z]+(?:[1-5])?)$"
-)
+UUID_RE = re.compile(r"^(?P<id>[0-9a-f-]{36})_(?P<label>[a-z]+(?:[1-5])?)$")
 LABEL_RE = re.compile(r"^(?P<base>[a-z]+?)(?P<tone>[1-5])?$")
 
 
@@ -59,10 +56,22 @@ def parse_label(label: str) -> tuple[str, str]:
 def canonicalize_base(base: str) -> str:
     base = base.strip().lower().replace("ü", "v").replace("u:", "v")
     aliases = {
-        "jv": "ju", "jve": "jue", "jvan": "juan", "jvn": "jun",
-        "qv": "qu", "qve": "que", "qvan": "quan", "qvn": "qun",
-        "xv": "xu", "xve": "xue", "xvan": "xuan", "xvn": "xun",
-        "yv": "yu", "yve": "yue", "yvan": "yuan", "yvn": "yun",
+        "jv": "ju",
+        "jve": "jue",
+        "jvan": "juan",
+        "jvn": "jun",
+        "qv": "qu",
+        "qve": "que",
+        "qvan": "quan",
+        "qvn": "qun",
+        "xv": "xu",
+        "xve": "xue",
+        "xvan": "xuan",
+        "xvn": "xun",
+        "yv": "yu",
+        "yve": "yue",
+        "yvan": "yuan",
+        "yvn": "yun",
     }
     return aliases.get(base, base)
 
@@ -80,8 +89,7 @@ def finalize(values: dict[str, str]) -> dict[str, str]:
                 values["parse_status"] == "ok"
                 and base not in {"m", "n"}
                 # Known 54-minute conversational recording mislabeled as ai1.
-                and Path(values["path"]).name
-                != "0012_ai1_ai_a1f18643.wav"
+                and Path(values["path"]).name != "0012_ai1_ai_a1f18643.wav"
             )
             else "no"
         ),
@@ -89,7 +97,9 @@ def finalize(values: dict[str, str]) -> dict[str, str]:
     return values
 
 
-def parse_recording(path: Path, root: Path, dataset: str, speaker_name: str | None = None) -> dict[str, str]:
+def parse_recording(
+    path: Path, root: Path, dataset: str, speaker_name: str | None = None
+) -> dict[str, str]:
     relative = path.relative_to(root)
     parts = relative.parts
     # Preserve the uppercase T/Z in canonical UTC timestamps.
@@ -181,13 +191,20 @@ def parse_recording(path: Path, root: Path, dataset: str, speaker_name: str | No
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--raw-root", type=Path, default=Path("raw/mandarin-tone-recordings"))
+    parser.add_argument(
+        "--raw-root", type=Path, default=Path("raw/mandarin-tone-recordings")
+    )
     parser.add_argument("--output", type=Path, default=Path("data/recordings.csv"))
     args = parser.parse_args()
 
     sources = [
         (args.raw_root / "audio_fixed_abe", "tone_labeled", {".wav", ".webm"}, None),
-        (args.raw_root / "correct_audio_oli_2", "tone_unspecified", {".wav", ".webm"}, "oli_2"),
+        (
+            args.raw_root / "correct_audio_oli_2",
+            "tone_unspecified",
+            {".wav", ".webm"},
+            "oli_2",
+        ),
         (
             args.raw_root
             / "Yue/data/media/recordings/fa2e81d6-2ba5-42ca-9d50-bc2ee0ed1d1f",
@@ -201,7 +218,9 @@ def main() -> None:
     for root, dataset, extensions, speaker_name in sources:
         if not root.exists():
             continue
-        for path in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in extensions):
+        for path in sorted(
+            p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in extensions
+        ):
             rows.append(parse_recording(path, root, dataset, speaker_name))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

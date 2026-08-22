@@ -13,7 +13,6 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModel
 
-
 MODEL_NAMES = {
     "hubert": "TencentGameMate/chinese-hubert-base",
     "xlsr": "facebook/wav2vec2-xls-r-300m",
@@ -22,8 +21,18 @@ MODEL_NAMES = {
 
 def decode_audio(path: Path, ffmpeg: Path) -> torch.Tensor:
     command = [
-        str(ffmpeg), "-v", "error", "-i", str(path), "-ac", "1", "-ar", "16000",
-        "-f", "f32le", "-",
+        str(ffmpeg),
+        "-v",
+        "error",
+        "-i",
+        str(path),
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-f",
+        "f32le",
+        "-",
     ]
     result = subprocess.run(command, check=True, stdout=subprocess.PIPE)
     audio = np.frombuffer(result.stdout, dtype=np.float32).copy()
@@ -32,7 +41,9 @@ def decode_audio(path: Path, ffmpeg: Path) -> torch.Tensor:
     return torch.from_numpy(audio)
 
 
-def collate_audio(items: list[tuple[dict[str, str], torch.Tensor]]) -> tuple[torch.Tensor, torch.Tensor]:
+def collate_audio(
+    items: list[tuple[dict[str, str], torch.Tensor]],
+) -> tuple[torch.Tensor, torch.Tensor]:
     length = max(audio.numel() for _, audio in items)
     values = torch.zeros(len(items), length, dtype=torch.float32)
     mask = torch.zeros(len(items), length, dtype=torch.long)
@@ -42,7 +53,9 @@ def collate_audio(items: list[tuple[dict[str, str], torch.Tensor]]) -> tuple[tor
     return values, mask
 
 
-def pool_hidden(hidden: torch.Tensor, output_lengths: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def pool_hidden(
+    hidden: torch.Tensor, output_lengths: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     global_features = []
     temporal_features = []
     for sequence, length in zip(hidden, output_lengths.tolist()):
@@ -70,13 +83,19 @@ def main() -> None:
 
     output = args.output or Path(f"data/features/{args.encoder}.pt")
     with args.manifest.open(newline="", encoding="utf-8") as handle:
-        rows = [row for row in csv.DictReader(handle) if row["include_experiment"] == "yes"]
+        rows = [
+            row for row in csv.DictReader(handle) if row["include_experiment"] == "yes"
+        ]
     if args.limit is not None:
         rows = rows[: args.limit]
 
     device = torch.device(args.device)
     model_name = MODEL_NAMES[args.encoder]
-    model = AutoModel.from_pretrained(model_name, cache_dir=args.model_cache).to(device).eval()
+    model = (
+        AutoModel.from_pretrained(model_name, cache_dir=args.model_cache)
+        .to(device)
+        .eval()
+    )
     for parameter in model.parameters():
         parameter.requires_grad_(False)
 
@@ -89,14 +108,21 @@ def main() -> None:
 
     for start in range(0, len(rows), args.batch_size):
         batch_rows = rows[start : start + args.batch_size]
-        decoded = [(row, decode_audio(Path(row["path"]), args.ffmpeg)) for row in batch_rows]
+        decoded = [
+            (row, decode_audio(Path(row["path"]), args.ffmpeg)) for row in batch_rows
+        ]
         values, input_mask = collate_audio(decoded)
-        with torch.inference_mode(), torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
+        with (
+            torch.inference_mode(),
+            torch.autocast(device_type=device.type, enabled=device.type == "cuda"),
+        ):
             hidden = model(
                 input_values=values.to(device), attention_mask=input_mask.to(device)
             ).last_hidden_state
         if hasattr(model, "_get_feat_extract_output_lengths"):
-            lengths = model._get_feat_extract_output_lengths(input_mask.sum(dim=1)).cpu()
+            lengths = model._get_feat_extract_output_lengths(
+                input_mask.sum(dim=1)
+            ).cpu()
         else:
             lengths = torch.full((len(batch_rows),), hidden.shape[1], dtype=torch.long)
         global_features, temporal_features = pool_hidden(hidden.cpu(), lengths)
@@ -125,4 +151,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

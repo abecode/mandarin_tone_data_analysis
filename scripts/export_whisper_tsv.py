@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-
 FIELDS = [
     "fname",
     "label",
@@ -60,7 +59,9 @@ def main() -> None:
                 try:
                     result = json.loads(line)
                 except json.JSONDecodeError as exc:
-                    raise SystemExit(f"Invalid JSON on {args.input}:{line_number}: {exc}") from exc
+                    raise SystemExit(
+                        f"Invalid JSON on {args.input}:{line_number}: {exc}"
+                    ) from exc
 
                 recording_path = result.get("path", "")
                 fname = recording_path if args.full_path else Path(recording_path).name
