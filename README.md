@@ -189,3 +189,40 @@ Several strong patterns stand out.
 
   Before calculating final metrics, I recommend excluding the 54-minute contaminated file, flagging repetition failures, normalizing the pinyin spelling conventions, and
   implementing strict versus polyphonic/lenient character-to-pinyin scoring.
+
+## Training manifest
+
+The normalized manifest includes `abe_new`. It retains original labels, adds
+canonical numbered-pinyin fields, and uses `include_experiment=no` for unlabeled
+recordings and the excluded syllabic `m`/`n` classes.
+
+## Frozen-encoder classifier grid
+
+The initial supervised experiment is a 2 x 2 x 2 grid:
+
+- training speaker: Abe or Yue
+- encoder: Chinese HuBERT Base or XLS-R 300M
+- aggregation: global mean+standard-deviation or eight ordered temporal bins
+
+Both heads predict a 411-way canonical base syllable. The tone head predicts
+tones 1--4; unspecified and neutral-tone labels are masked from tone loss.
+Oli is never used for training and is evaluated only for base syllables.
+
+Install the additional dependencies into the existing environment:
+
+```
+python3 -m pip install -r requirements-training.txt
+```
+
+Then rebuild the manifest so the known 54-minute mislabeled recording is
+excluded and submit the two-encoder Slurm array:
+
+```
+python3 scripts/build_manifest.py
+sbatch slurm/frozen_encoder_grid.sbatch
+```
+
+Each array task extracts its frozen encoder features once, retaining both
+aggregation representations, and then trains its four classifier variants.
+Outputs are written under `results/frozen_grid/`; each run contains
+`metrics.json`, `predictions.tsv`, and `classifier.pt`.

@@ -13,6 +13,10 @@ CANONICAL_RE = re.compile(
     r"^(?P<index>\d{4})_(?P<attempt>\d{2})_(?P<label>[a-z]+(?:[1-5])?)_"
     r"(?P<timestamp>\d{8}T\d{6}Z)_(?P<id>[0-9a-f-]{36})$"
 )
+CANONICAL_UNSPECIFIED_RE = re.compile(
+    r"^(?P<index>\d{4})_(?P<attempt>\d{2})_(?P<label>[a-z]+)_unspecified_"
+    r"(?P<timestamp>\d{8}T\d{6}Z)_(?P<id>[0-9a-f-]{36})$"
+)
 LEGACY_RE = re.compile(
     r"^(?P<index>\d{4})_(?P<label>[a-z]+(?:[1-5])?)_"
     r"(?:(?:unspecified|row\d+)_)?(?P<base>[a-z]+)_(?P<id>[0-9a-f]{8})$"
@@ -33,6 +37,10 @@ FIELDS = [
     "label",
     "base_syllable",
     "tone",
+    "canonical_base",
+    "canonical_tone",
+    "canonical_label",
+    "include_experiment",
     "recorded_at_utc",
     "recording_id",
     "extension",
@@ -48,20 +56,53 @@ def parse_label(label: str) -> tuple[str, str]:
     return match.group("base"), match.group("tone") or ""
 
 
+def canonicalize_base(base: str) -> str:
+    base = base.strip().lower().replace("ü", "v").replace("u:", "v")
+    aliases = {
+        "jv": "ju", "jve": "jue", "jvan": "juan", "jvn": "jun",
+        "qv": "qu", "qve": "que", "qvan": "quan", "qvn": "qun",
+        "xv": "xu", "xve": "xue", "xvan": "xuan", "xvn": "xun",
+        "yv": "yu", "yve": "yue", "yvan": "yuan", "yvn": "yun",
+    }
+    return aliases.get(base, base)
+
+
+def finalize(values: dict[str, str]) -> dict[str, str]:
+    base = canonicalize_base(values["base_syllable"])
+    tone = values["tone"]
+    values.update(
+        canonical_base=base,
+        canonical_tone=tone,
+        canonical_label=f"{base}{tone}" if base else "",
+        include_experiment=(
+            "yes"
+            if (
+                values["parse_status"] == "ok"
+                and base not in {"m", "n"}
+                # Known 54-minute conversational recording mislabeled as ai1.
+                and Path(values["path"]).name
+                != "0012_ai1_ai_a1f18643.wav"
+            )
+            else "no"
+        ),
+    )
+    return values
+
+
 def parse_recording(path: Path, root: Path, dataset: str, speaker_name: str | None = None) -> dict[str, str]:
     relative = path.relative_to(root)
     parts = relative.parts
     # Preserve the uppercase T/Z in canonical UTC timestamps.
     stem = path.stem
-    speaker = speaker_name or (parts[0] if dataset == "tone_labeled" and len(parts) > 1 else "oli_2")
-    session = next(
-        (
-            part
-            for part in parts[:-1]
-            if part.startswith("session_") or re.fullmatch(r"[0-9a-f-]{36}", part)
-        ),
-        "",
-    )
+    speaker = speaker_name or (parts[0] if len(parts) > 1 else dataset)
+    session_candidates = [
+        part
+        for part in parts[:-1]
+        if part.startswith("session_") or re.fullmatch(r"[0-9a-f-]{36}", part)
+    ]
+    # In canonical participant/session layouts both directories are UUIDs;
+    # the session is the innermost matching directory.
+    session = session_candidates[-1] if session_candidates else ""
 
     values = {field: "" for field in FIELDS}
     values.update(
@@ -87,7 +128,23 @@ def parse_recording(path: Path, root: Path, dataset: str, speaker_name: str | No
             naming_scheme="canonical",
             parse_status="ok",
         )
-        return values
+        return finalize(values)
+
+    match = CANONICAL_UNSPECIFIED_RE.fullmatch(stem)
+    if match:
+        data = match.groupdict()
+        values.update(
+            stimulus_index=data["index"],
+            attempt=data["attempt"],
+            label=data["label"],
+            base_syllable=data["label"],
+            tone="",
+            recorded_at_utc=data["timestamp"],
+            recording_id=data["id"],
+            naming_scheme="canonical_unspecified",
+            parse_status="ok",
+        )
+        return finalize(values)
 
     match = LEGACY_RE.fullmatch(stem)
     if match:
@@ -102,7 +159,7 @@ def parse_recording(path: Path, root: Path, dataset: str, speaker_name: str | No
             naming_scheme="legacy_session",
             parse_status="ok",
         )
-        return values
+        return finalize(values)
 
     match = UUID_RE.fullmatch(stem)
     if match:
@@ -116,10 +173,10 @@ def parse_recording(path: Path, root: Path, dataset: str, speaker_name: str | No
             naming_scheme="uuid_label",
             parse_status="ok",
         )
-        return values
+        return finalize(values)
 
     values.update(naming_scheme="unknown", parse_status="unparsed")
-    return values
+    return finalize(values)
 
 
 def main() -> None:
@@ -138,6 +195,7 @@ def main() -> None:
             {".wav", ".webm"},
             "Yue",
         ),
+        (args.raw_root / "abe_new", "abe_new", {".wav", ".webm"}, None),
     ]
     rows: list[dict[str, str]] = []
     for root, dataset, extensions, speaker_name in sources:
