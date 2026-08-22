@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Add the format-0 marker to legacy classifier checkpoints."""
+"""Migrate classifier checkpoints to the current schema."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from checkpoint_utils import CHECKPOINT_FORMAT, load_checkpoint, save_checkpoint
+from checkpoint_utils import (
+    CURRENT_CHECKPOINT_FORMAT,
+    convert_to_current_format,
+    load_raw_checkpoint,
+    save_checkpoint,
+)
 
 
 def main() -> None:
@@ -34,16 +39,19 @@ def main() -> None:
 
     changed = 0
     for path in sorted(paths):
-        checkpoint = load_checkpoint(path)
-        if "format" in checkpoint:
-            print(f"unchanged format={checkpoint['format']}: {path}")
+        checkpoint = load_raw_checkpoint(path)
+        old_format = checkpoint.get("format", 0)
+        if old_format == CURRENT_CHECKPOINT_FORMAT:
+            print(f"unchanged format={old_format}: {path}")
             continue
-        print(f"{'migrate' if args.apply else 'would migrate'} to format 0: {path}")
+
+        action = "migrate" if args.apply else "would migrate"
+        print(f"{action} format {old_format} -> {CURRENT_CHECKPOINT_FORMAT}: {path}")
         if args.apply:
-            checkpoint["format"] = CHECKPOINT_FORMAT
-            save_checkpoint(path, checkpoint)
-            reloaded = load_checkpoint(path)
-            if reloaded["format"] != CHECKPOINT_FORMAT:
+            migrated = convert_to_current_format(checkpoint)
+            save_checkpoint(path, migrated)
+            reloaded = load_raw_checkpoint(path)
+            if reloaded["format"] != CURRENT_CHECKPOINT_FORMAT:
                 raise RuntimeError(f"Migration verification failed: {path}")
         changed += 1
 

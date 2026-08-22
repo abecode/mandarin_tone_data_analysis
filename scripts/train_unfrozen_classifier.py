@@ -12,7 +12,13 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from checkpoint_utils import create_checkpoint, save_checkpoint
+from checkpoint_utils import (
+    MODEL_REVISIONS,
+    create_checkpoint,
+    save_checkpoint,
+    split_run_record,
+)
+from config_utils import apply_config_defaults, requested_config_path
 from extract_speech_features import MODEL_NAMES
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
@@ -169,6 +175,8 @@ def evaluate(model, loader, device, base_names, paths) -> tuple[dict, list[dict]
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    default_config = Path("configs/unfrozen_classifier.json")
+    parser.add_argument("--config", type=Path, default=default_config)
     parser.add_argument("--audio-cache", type=Path, default=Path("data/audio_16khz.pt"))
     parser.add_argument("--encoder", choices=sorted(MODEL_NAMES), required=True)
     parser.add_argument("--model-cache", type=Path, default=Path("models/huggingface"))
@@ -186,6 +194,7 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=20260821)
     parser.add_argument("--device", default="cuda")
+    apply_config_defaults(parser, requested_config_path(default_config))
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -239,7 +248,10 @@ def main() -> None:
     }
 
     encoder = AutoModel.from_pretrained(
-        MODEL_NAMES[args.encoder], cache_dir=args.model_cache, local_files_only=True
+        MODEL_NAMES[args.encoder],
+        revision=MODEL_REVISIONS[MODEL_NAMES[args.encoder]],
+        cache_dir=args.model_cache,
+        local_files_only=True,
     )
     unfrozen = unfreeze_top_layers(encoder, args.unfreeze_layers)
     model = FineTuneModel(encoder, args.pooling, len(base_names), args.dropout).to(
@@ -325,8 +337,11 @@ def main() -> None:
     model.load_state_dict(best_state, strict=False)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     metrics = {
+        "checkpoint_kind": "partial_finetune",
+        "state_scope": "trainable_overlay",
         "encoder": args.encoder,
         "model_name": MODEL_NAMES[args.encoder],
+        "model_revision": MODEL_REVISIONS[MODEL_NAMES[args.encoder]],
         "train_speaker": args.train_speaker,
         "external_speaker": external_speaker,
         "pooling": args.pooling,
@@ -336,6 +351,21 @@ def main() -> None:
         "validation_strategy": "stratified-base",
         "base_vocabulary_size": len(base_names),
         "base_vocabulary": base_names,
+        "architecture": {
+            "dropout": args.dropout,
+            "projection_size": 256,
+            "temporal_bins": 8 if args.pooling == "temporal8" else None,
+            "frame_projection_size": 128 if args.pooling == "temporal8" else None,
+        },
+        "training": {
+            "epochs": args.epochs,
+            "patience": args.patience,
+            "batch_size": args.batch_size,
+            "gradient_accumulation": args.gradient_accumulation,
+            "encoder_learning_rate": args.encoder_learning_rate,
+            "head_learning_rate": args.head_learning_rate,
+            "tone_loss_weight": args.tone_loss_weight,
+        },
         "split_sizes": {name: len(data) for name, data in datasets.items()},
         "history": history,
     }
@@ -345,10 +375,11 @@ def main() -> None:
             model, loaders[name], device, base_names, artifact["paths"]
         )
     (args.output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
+    metadata, measured_metrics = split_run_record(metrics)
     checkpoint = create_checkpoint(
-        state_key="trainable_state_dict",
         state_dict=best_state,
-        metrics=metrics,
+        metadata=metadata,
+        metrics=measured_metrics,
     )
     save_checkpoint(args.output_dir / "classifier.pt", checkpoint)
     with (args.output_dir / "predictions.tsv").open(

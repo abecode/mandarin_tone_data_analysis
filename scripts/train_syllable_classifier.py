@@ -12,7 +12,13 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from checkpoint_utils import create_checkpoint, save_checkpoint
+from checkpoint_utils import (
+    MODEL_REVISIONS,
+    create_checkpoint,
+    save_checkpoint,
+    split_run_record,
+)
+from config_utils import apply_config_defaults, requested_config_path
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
@@ -179,6 +185,8 @@ def score(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    default_config = Path("configs/frozen_classifier.json")
+    parser.add_argument("--config", type=Path, default=default_config)
     parser.add_argument("--features", type=Path, required=True)
     parser.add_argument("--train-speaker", choices=["abe", "yue"], required=True)
     parser.add_argument("--pooling", choices=["global", "temporal8"], required=True)
@@ -197,6 +205,7 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=20260821)
     parser.add_argument("--device", default="cuda")
+    apply_config_defaults(parser, requested_config_path(default_config))
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -311,9 +320,17 @@ def main() -> None:
     assert best_state is not None
     model.load_state_dict(best_state)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    model_revision = artifact.get("model_revision") or MODEL_REVISIONS.get(
+        artifact["model_name"]
+    )
+    if model_revision is None:
+        raise ValueError(f"No pinned revision is known for {artifact['model_name']!r}")
     metrics = {
+        "checkpoint_kind": "frozen_encoder_classifier",
+        "state_scope": "complete_head",
         "encoder": artifact["encoder"],
         "model_name": artifact["model_name"],
+        "model_revision": model_revision,
         "train_speaker": args.train_speaker,
         "external_speaker": external_speaker,
         "pooling": args.pooling,
@@ -321,6 +338,20 @@ def main() -> None:
         "validation_strategy": args.validation_strategy,
         "base_vocabulary_size": len(base_names),
         "base_vocabulary": base_names,
+        "architecture": {
+            "dropout": args.dropout,
+            "projection_size": 256,
+            "temporal_bins": 8 if args.pooling == "temporal8" else None,
+            "frame_projection_size": 128 if args.pooling == "temporal8" else None,
+        },
+        "training": {
+            "epochs": args.epochs,
+            "patience": args.patience,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+            "tone_loss_weight": args.tone_loss_weight,
+            "validation_fraction": args.validation_fraction,
+        },
         "split_sizes": {name: len(data) for name, data in datasets.items()},
         "history": history,
     }
@@ -329,10 +360,11 @@ def main() -> None:
         metrics[name], all_predictions[name] = score(model, loaders[name], device)
     # Tone metrics for Oli are intentionally null because its labels are unspecified.
     (args.output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
+    metadata, measured_metrics = split_run_record(metrics)
     checkpoint = create_checkpoint(
-        state_key="state_dict",
         state_dict=best_state,
-        metrics=metrics,
+        metadata=metadata,
+        metrics=measured_metrics,
     )
     save_checkpoint(args.output_dir / "classifier.pt", checkpoint)
     with (args.output_dir / "predictions.tsv").open(

@@ -244,11 +244,24 @@ decoder warnings in `results/webm_decode_audit.tsv`.
 
 ### Checkpoint format
 
-Classifier checkpoints use a versioned, top-level dictionary. Format 0 has a
-top-level `format` value of `0`, exactly one model-state entry (`state_dict` for
-frozen-encoder heads or `trainable_state_dict` for partial fine-tuning), and a
-`metrics` dictionary. Checkpoints are written atomically so an interrupted save
-does not replace a valid earlier file.
+Classifier checkpoints use a versioned, top-level dictionary. The current
+format is format 1:
+
+```
+{
+    "format": 1,
+    "state_dict": {...},
+    "metadata": {...},
+    "metrics": {...},
+}
+```
+
+`metadata` contains everything needed to reconstruct and interpret the model,
+including the exact Hugging Face revision, pooling architecture, state scope,
+and base-syllable vocabulary. `metrics` contains learning history and measured
+validation/test results. `state_scope` distinguishes complete frozen-encoder
+heads from partial fine-tuning overlays. Checkpoints are written atomically so
+an interrupted save does not replace a valid earlier file.
 
 Inspect legacy checkpoints without changing them, then migrate them in place:
 
@@ -257,8 +270,32 @@ python3 scripts/migrate_checkpoints.py
 python3 scripts/migrate_checkpoints.py --apply
 ```
 
-The loader treats a missing `format` key as legacy format 0, allowing the
-migration tool to read checkpoints created before versioning was introduced.
+The loader converts legacy format 0 checkpoints in memory, while the migration
+tool rewrites them to format 1. Existing experiment checkpoints have already
+been migrated without retraining.
+
+Run inference on either a frozen or partially fine-tuned checkpoint with:
+
+```
+python3 scripts/predict_classifier.py \
+    results/unfrozen_grid/hubert_abe_global/classifier.pt \
+    path/to/recording.wav \
+    --device cuda
+```
+
+The command loads the pinned pretrained revision, reconstructs the appropriate
+aggregation and heads, validates every overlay key, and emits base, tone, joint,
+top-k base, and tone-probability predictions as JSON.
+
+### Experiment configuration
+
+Version-controlled training defaults live in:
+
+- `configs/frozen_classifier.json`
+- `configs/unfrozen_classifier.json`
+
+The Slurm grid scripts pass these files through `--config`. Individual command-
+line options can still override a configured value for an explicit experiment.
 
 ## Development checks
 
@@ -270,3 +307,6 @@ python3 -m ruff format --check scripts tests
 python3 -m ruff check scripts tests
 python3 -m unittest discover -s tests -v
 ```
+
+The GitHub Actions workflow in `.github/workflows/ci.yml` runs the same format,
+lint, and unit-test checks for pushes and pull requests.

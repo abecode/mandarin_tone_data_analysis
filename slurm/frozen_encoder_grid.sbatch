@@ -35,11 +35,11 @@ for TRAIN_SPEAKER in abe yue; do
     for POOLING in global temporal8; do
         OUTPUT_DIR="$OUTPUT_ROOT/${ENCODER}_${TRAIN_SPEAKER}_${POOLING}"
         "$PROJECT_PYTHON" scripts/train_syllable_classifier.py \
+            --config configs/frozen_classifier.json \
             --features "$FEATURES" \
             --train-speaker "$TRAIN_SPEAKER" \
             --pooling "$POOLING" \
             --output-dir "$OUTPUT_DIR" \
-            --validation-strategy stratified-base \
             --device cuda
     done
 done

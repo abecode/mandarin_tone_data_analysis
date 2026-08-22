@@ -1,0 +1,12 @@
+{
+  "batch_size": 8,
+  "dropout": 0.2,
+  "encoder_learning_rate": 0.00001,
+  "epochs": 20,
+  "gradient_accumulation": 4,
+  "head_learning_rate": 0.0005,
+  "patience": 4,
+  "seed": 20260821,
+  "tone_loss_weight": 1.0,
+  "unfreeze_layers": 4
+}

@@ -21,12 +21,12 @@ for TRAIN_SPEAKER in abe yue; do
     for POOLING in global temporal8; do
         OUTPUT_DIR="$PROJECT_ROOT/results/unfrozen_grid/${ENCODER}_${TRAIN_SPEAKER}_${POOLING}"
         "$PROJECT_PYTHON" scripts/train_unfrozen_classifier.py \
+            --config configs/unfrozen_classifier.json \
             --audio-cache data/audio_16khz.pt \
             --encoder "$ENCODER" \
             --train-speaker "$TRAIN_SPEAKER" \
             --pooling "$POOLING" \
             --output-dir "$OUTPUT_DIR" \
-            --unfreeze-layers 4 \
             --device cuda
     done
 done

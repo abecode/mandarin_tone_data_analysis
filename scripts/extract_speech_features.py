@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from checkpoint_utils import MODEL_REVISIONS
 from transformers import AutoModel
 
 MODEL_NAMES = {
@@ -91,8 +92,13 @@ def main() -> None:
 
     device = torch.device(args.device)
     model_name = MODEL_NAMES[args.encoder]
+    model_revision = MODEL_REVISIONS[model_name]
     model = (
-        AutoModel.from_pretrained(model_name, cache_dir=args.model_cache)
+        AutoModel.from_pretrained(
+            model_name,
+            revision=model_revision,
+            cache_dir=args.model_cache,
+        )
         .to(device)
         .eval()
     )
@@ -137,6 +143,7 @@ def main() -> None:
     artifact = {
         "encoder": args.encoder,
         "model_name": model_name,
+        "model_revision": model_revision,
         "paths": paths,
         "bases": bases,
         "tones": tones,
