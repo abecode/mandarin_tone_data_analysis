@@ -226,3 +226,18 @@ Each array task extracts its frozen encoder features once, retaining both
 aggregation representations, and then trains its four classifier variants.
 Outputs are written under `results/frozen_grid/`; each run contains
 `metrics.json`, `predictions.tsv`, and `classifier.pt`.
+
+Validation uses one deterministically selected recording per base syllable,
+provided the training speaker has at least two examples of that base. This
+keeps all 411 base classes in training and represents all 411 in validation.
+The earlier hash-fraction split remains available with
+`--validation-strategy hash-fraction` for comparison.
+
+Audit a deterministic sample of WebM decoding with:
+
+```
+python3 scripts/audit_webm_decode.py --sample-size 100
+```
+
+The audit compares decoded duration to the container duration and retains all
+decoder warnings in `results/webm_decode_audit.tsv`.

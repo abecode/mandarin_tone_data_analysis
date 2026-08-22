@@ -37,6 +37,32 @@ def validation_member(path: str, fraction: float, seed: int) -> bool:
     return value < fraction
 
 
+def stable_order(path: str, seed: int) -> bytes:
+    return hashlib.sha256(f"{seed}:{path}".encode()).digest()
+
+
+def split_training_speaker(
+    paths: list[str], bases: list[str], groups: list[str], train_speaker: str,
+    strategy: str, fraction: float, seed: int,
+) -> tuple[list[int], list[int]]:
+    candidates = [index for index, group in enumerate(groups) if group == train_speaker]
+    if strategy == "hash-fraction":
+        validation = [index for index in candidates if validation_member(paths[index], fraction, seed)]
+        validation_set = set(validation)
+        return [index for index in candidates if index not in validation_set], validation
+
+    by_base: dict[str, list[int]] = {}
+    for index in candidates:
+        by_base.setdefault(bases[index], []).append(index)
+    validation = []
+    for indices in by_base.values():
+        # Never remove the only training example of a class.
+        if len(indices) >= 2:
+            validation.append(min(indices, key=lambda index: stable_order(paths[index], seed)))
+    validation_set = set(validation)
+    return [index for index in candidates if index not in validation_set], sorted(validation)
+
+
 class FeatureDataset(Dataset):
     def __init__(self, features: torch.Tensor, base: torch.Tensor, tone: torch.Tensor, indices: list[int]):
         self.features = features
@@ -122,6 +148,10 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--tone-loss-weight", type=float, default=1.0)
     parser.add_argument("--validation-fraction", type=float, default=0.15)
+    parser.add_argument(
+        "--validation-strategy", choices=["stratified-base", "hash-fraction"],
+        default="stratified-base",
+    )
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=20260821)
     parser.add_argument("--device", default="cuda")
@@ -143,13 +173,14 @@ def main() -> None:
         int(tone) - 1 if tone in {"1", "2", "3", "4"} else -1 for tone in artifact["tones"]
     ])
 
-    train_indices, validation_indices, external_indices, oli_indices = [], [], [], []
+    train_indices, validation_indices = split_training_speaker(
+        artifact["paths"], artifact["bases"], groups, args.train_speaker,
+        args.validation_strategy, args.validation_fraction, args.seed,
+    )
+    external_indices, oli_indices = [], []
     external_speaker = "yue" if args.train_speaker == "abe" else "abe"
-    for index, (path, group) in enumerate(zip(artifact["paths"], groups)):
-        if group == args.train_speaker:
-            target = validation_indices if validation_member(path, args.validation_fraction, args.seed) else train_indices
-            target.append(index)
-        elif group == external_speaker:
+    for index, group in enumerate(groups):
+        if group == external_speaker:
             external_indices.append(index)
         elif group == "oli":
             oli_indices.append(index)
@@ -209,6 +240,7 @@ def main() -> None:
         "encoder": artifact["encoder"], "model_name": artifact["model_name"],
         "train_speaker": args.train_speaker, "external_speaker": external_speaker,
         "pooling": args.pooling, "seed": args.seed,
+        "validation_strategy": args.validation_strategy,
         "base_vocabulary_size": len(base_names), "base_vocabulary": base_names,
         "split_sizes": {name: len(data) for name, data in datasets.items()},
         "history": history,
@@ -238,4 +270,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
