@@ -310,3 +310,108 @@ python3 -m unittest discover -s tests -v
 
 The GitHub Actions workflow in `.github/workflows/ci.yml` runs the same format,
 lint, and unit-test checks for pushes and pull requests.
+
+## Extended partial fine-tuning grid
+
+The extended grid compares global statistics, 8 ordered bins, and 16 ordered
+bins for both encoders and both training speakers. To keep the flattened
+temporal representation fixed at 1,024 values, 8-bin pooling uses 128 features
+per bin and 16-bin pooling uses 64 features per bin. Training uses at most 40
+epochs, does not early-stop before epoch 15, and uses patience 6 afterward.
+Checkpoints are selected first by validation base accuracy and then by tone
+accuracy as a tie-breaker.
+
+Submit the two parallel encoder branches with:
+
+```
+sbatch slurm/unfrozen_extended_grid.sbatch
+```
+
+The 12 run directories are written under `results/unfrozen_grid_extended/`,
+leaving the original 20-epoch grid unchanged.
+
+When I prompted Codex to analyze the results, eventually it picked up
+that Yue was a native speaker and Abe was not, realizing the need for
+some manual annotation.  It suggested also doing extracting F0
+contours to further study these.
+
+I also have another idea: do speech activity detection and rerun the
+ASR results on just the speech audio, not the whole recording
+including silence.
+
+## Speech endpointing study
+
+The endpointing experiment tests whether variable leading and trailing silence
+harms ordered temporal pooling. The detector uses recording-adaptive RMS energy
+in 20 ms frames, removes brief active runs, bridges short internal gaps, and
+retains 80 ms of context on both sides of the detected speech. Conservative
+safety checks retain the original recording when the proposed span is too short
+or would remove more than 80% of the audio.
+
+Run a small, speaker-balanced endpoint audit with:
+
+```
+python3 scripts/audit_speech_endpointing.py
+```
+
+This writes boundary metadata and dependency-free SVG plots under
+`results/endpointing_audit/`. The full CPU cache and dependent HuBERT grid can
+then be submitted with:
+
+```
+CACHE_JOB=$(sbatch --parsable slurm/cache_endpointed_audio.sbatch)
+sbatch --dependency="afterok:$CACHE_JOB" \
+    slurm/unfrozen_endpointed_hubert_grid.sbatch
+```
+
+The versioned endpointed cache is written to
+`data/audio_16khz_endpointed.pt`. It contains trimmed waveforms, original and
+detected boundaries, energy diagnostics, fallback status, and the complete
+detector configuration. In the full 5,648-recording cache, median trimming was
+54.8% for Abe, 54.2% for Yue, and 38.5% for Oli. The detector retained the
+original audio for 201 Abe, 12 Yue, and 4 Oli recordings that failed a safety
+check.
+
+### Endpointed HuBERT results
+
+The six-run grid uses the same 40-epoch partial-fine-tuning configuration as the
+extended experiment. Results are stored under
+`results/unfrozen_grid_endpointed/`; exported confusion matrices are under
+`results/unfrozen_grid_endpointed_analysis/`.
+
+| Training speaker | Pooling | Validation base | External base | External tone | External joint | Oli base |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Abe | global | 68.86% | **42.13%** | 66.22% | **27.91%** | **12.38%** |
+| Abe | 8-bin | 40.63% | 24.38% | **67.74%** | 17.33% | 4.05% |
+| Abe | 16-bin | 36.74% | 20.86% | 64.57% | 13.34% | 3.33% |
+| Yue | global | **73.72%** | **26.21%** | 40.34% | **11.80%** | **2.62%** |
+| Yue | 8-bin | 41.61% | 8.51% | **44.17%** | 3.80% | 1.67% |
+| Yue | 16-bin | 35.77% | 7.35% | 42.29% | 3.83% | 1.43% |
+
+Compared with otherwise matched untrimmed runs, the external changes in
+percentage points were:
+
+| Training speaker | Pooling | Base change | Tone change | Joint change |
+| --- | --- | ---: | ---: | ---: |
+| Abe | global | -0.59 | +2.29 | +1.12 |
+| Abe | 8-bin | **+7.05** | **+9.22** | **+7.11** |
+| Abe | 16-bin | **+7.76** | **+8.75** | **+6.23** |
+| Yue | global | +6.32 | -8.30 | +1.47 |
+| Yue | 8-bin | **+4.42** | **+8.37** | **+2.47** |
+| Yue | 16-bin | **+4.17** | **+7.52** | **+2.43** |
+
+Endpointing consistently improved every external metric for both ordered
+temporal representations, supporting the hypothesis that silence-induced
+misalignment had obscured their value. Eight bins nevertheless remained better
+than 16, so boundary silence was not the sole cause of the 16-bin deficit.
+Global pooling remained strongest for base and joint recognition, while the
+Abe-trained endpointed 8-bin model achieved the best cross-speaker tone accuracy
+(67.74%). This suggests that global and ordered representations may provide
+complementary information.
+
+Results on Oli did not improve consistently, so endpointing should not yet be
+assumed to help learner speech. The Yue-trained global model also lost 8.30
+points of external tone accuracy despite improving base recognition. These
+speaker-dependent outcomes motivate retaining the untrimmed condition and
+auditing pitch contours and realized-tone labels before treating endpointing as
+a universal preprocessing requirement.

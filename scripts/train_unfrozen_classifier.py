@@ -25,6 +25,11 @@ from torch.utils.data import DataLoader, Dataset
 from train_syllable_classifier import speaker_group, split_training_speaker
 from transformers import AutoModel
 
+TEMPORAL_POOLING = {
+    "temporal8": {"bins": 8, "frame_projection_size": 128},
+    "temporal16": {"bins": 16, "frame_projection_size": 64},
+}
+
 
 class AudioDataset(Dataset):
     def __init__(
@@ -64,6 +69,8 @@ class FineTuneModel(nn.Module):
         self.pooling = pooling
         width = encoder.config.hidden_size
         if pooling == "global":
+            self.temporal_bins = None
+            self.frame_projection_size = None
             self.project = nn.Sequential(
                 nn.LayerNorm(width * 2),
                 nn.Linear(width * 2, 256),
@@ -71,15 +78,18 @@ class FineTuneModel(nn.Module):
                 nn.Dropout(dropout),
             )
         else:
+            temporal_config = TEMPORAL_POOLING[pooling]
+            self.temporal_bins = temporal_config["bins"]
+            self.frame_projection_size = temporal_config["frame_projection_size"]
             self.frame_project = nn.Sequential(
                 nn.LayerNorm(width),
-                nn.Linear(width, 128),
+                nn.Linear(width, self.frame_projection_size),
                 nn.GELU(),
                 nn.Dropout(dropout),
             )
             self.project = nn.Sequential(
-                nn.LayerNorm(8 * 128),
-                nn.Linear(8 * 128, 256),
+                nn.LayerNorm(self.temporal_bins * self.frame_projection_size),
+                nn.Linear(self.temporal_bins * self.frame_projection_size, 256),
                 nn.GELU(),
                 nn.Dropout(dropout),
             )
@@ -87,12 +97,14 @@ class FineTuneModel(nn.Module):
         self.tone_head = nn.Linear(256, 4)
 
     def aggregate(self, hidden: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-        if self.pooling == "temporal8":
+        if self.pooling in TEMPORAL_POOLING:
             pooled = []
             for sequence, length in zip(hidden, lengths.tolist()):
                 sequence = self.frame_project(sequence[: max(1, int(length))])
                 pooled.append(
-                    F.adaptive_avg_pool1d(sequence.T.unsqueeze(0), 8).flatten()
+                    F.adaptive_avg_pool1d(
+                        sequence.T.unsqueeze(0), self.temporal_bins
+                    ).flatten()
                 )
             return torch.stack(pooled)
         positions = torch.arange(hidden.shape[1], device=hidden.device).unsqueeze(0)
@@ -181,11 +193,14 @@ def main() -> None:
     parser.add_argument("--encoder", choices=sorted(MODEL_NAMES), required=True)
     parser.add_argument("--model-cache", type=Path, default=Path("models/huggingface"))
     parser.add_argument("--train-speaker", choices=["abe", "yue"], required=True)
-    parser.add_argument("--pooling", choices=["global", "temporal8"], required=True)
+    parser.add_argument(
+        "--pooling", choices=["global", *TEMPORAL_POOLING], required=True
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--unfreeze-layers", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--patience", type=int, default=4)
+    parser.add_argument("--minimum-epochs", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--gradient-accumulation", type=int, default=4)
     parser.add_argument("--encoder-learning-rate", type=float, default=1e-5)
@@ -273,7 +288,7 @@ def main() -> None:
     )
     base_loss_fn, tone_loss_fn = nn.CrossEntropyLoss(), nn.CrossEntropyLoss()
 
-    best_score = -1.0
+    best_score = (-1.0, -1.0)
     best_state = None
     stale = 0
     history = []
@@ -310,8 +325,9 @@ def main() -> None:
         validation_metrics, _ = evaluate(
             model, loaders["validation"], device, base_names, artifact["paths"]
         )
-        selection = validation_metrics["base_accuracy"] + (
-            validation_metrics["tone_accuracy"] or 0
+        selection = (
+            validation_metrics["base_accuracy"],
+            validation_metrics["tone_accuracy"] or 0.0,
         )
         record = {
             "epoch": epoch,
@@ -329,8 +345,9 @@ def main() -> None:
             }
             stale = 0
         else:
-            stale += 1
-            if stale >= args.patience:
+            if epoch >= args.minimum_epochs:
+                stale += 1
+            if epoch >= args.minimum_epochs and stale >= args.patience:
                 break
 
     assert best_state is not None
@@ -354,12 +371,22 @@ def main() -> None:
         "architecture": {
             "dropout": args.dropout,
             "projection_size": 256,
-            "temporal_bins": 8 if args.pooling == "temporal8" else None,
-            "frame_projection_size": 128 if args.pooling == "temporal8" else None,
+            "temporal_bins": (
+                TEMPORAL_POOLING[args.pooling]["bins"]
+                if args.pooling in TEMPORAL_POOLING
+                else None
+            ),
+            "frame_projection_size": (
+                TEMPORAL_POOLING[args.pooling]["frame_projection_size"]
+                if args.pooling in TEMPORAL_POOLING
+                else None
+            ),
         },
         "training": {
             "epochs": args.epochs,
             "patience": args.patience,
+            "minimum_epochs": args.minimum_epochs,
+            "checkpoint_selection": "base_accuracy_then_tone_accuracy",
             "batch_size": args.batch_size,
             "gradient_accumulation": args.gradient_accumulation,
             "encoder_learning_rate": args.encoder_learning_rate,
