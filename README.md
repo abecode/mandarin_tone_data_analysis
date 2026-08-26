@@ -415,3 +415,141 @@ points of external tone accuracy despite improving base recognition. These
 speaker-dependent outcomes motivate retaining the untrimmed condition and
 auditing pitch contours and realized-tone labels before treating endpointing as
 a universal preprocessing requirement.
+
+## End-to-end attention pooling study
+
+The next experiment replaces fixed temporal aggregation with pooling learned
+jointly from the base-syllable and tone objectives. All models receive the full,
+untrimmed waveform. Chinese HuBERT supplies frame-level representations, its top
+four encoder layers are fine-tuned, and the pooling output feeds separate
+411-class base and four-class tone heads.
+
+Three pooling architectures are compared:
+
+- **Attentive global:** one learned frame-weight distribution produces a
+  weighted mean and standard deviation, which are projected to 256 values.
+- **Ordered 8-head:** eight content-sensitive, overlapping temporal heads each
+  pool a 128-dimensional frame projection. Their 1,024 concatenated values are
+  projected to 256.
+- **Attentive combined:** attentive-global and ordered-head branches are each
+  projected to 128 values, concatenated, and projected to the shared
+  256-dimensional classifier representation.
+
+Ordered heads use learnable Gaussian positional preferences initialized from
+early to late in the recording. If `a[k,t]` is head `k`'s weight at relative
+time `p[t]`, its empirical center is:
+
+```
+c[k] = sum_t a[k,t] * p[t]
+```
+
+The ordering loss penalizes adjacent centers that cross or approach within a
+0.03 margin:
+
+```
+ordering_loss = mean_k max(0, c[k] - c[k+1] + 0.03)
+```
+
+For the diversity loss, each attention vector is L2-normalized and their
+pairwise cosine-similarity matrix `S` is calculated. With `I` denoting the
+identity matrix:
+
+```
+diversity_loss = mean((S - I) ** 2)
+```
+
+The diagonal contributes zero; similar off-diagonal attention patterns are
+penalized. Thus, the conventionally named diversity loss penalizes homogeneous
+or redundant heads in order to promote diversity. Both auxiliary terms have
+weight 0.01:
+
+```
+loss = base_loss + tone_loss
+       + 0.01 * diversity_loss
+       + 0.01 * ordering_loss
+```
+
+### Silence-augmentation factor
+
+Each pooling architecture is trained with and without randomized boundary
+nonspeech, producing a 2-speaker x 3-architecture x 2-augmentation grid of 12
+runs. In the augmented condition, independently sampled 0--500 ms regions are
+added before and after every training example and regenerated each epoch. The
+material mixes nonspeech from outside detected endpoints, approximately
+level-matched noise, and digital zeros. Added samples are treated as valid
+audio, not padding. Validation, external, and Oli recordings are unchanged.
+
+Endpoint metadata is used only to obtain plausible augmentation material. The
+trained model does not trim input or require the endpoint detector at
+inference.
+
+Run the two parallel speaker branches with:
+
+```
+sbatch slurm/unfrozen_attention_grid.sbatch
+```
+
+Configuration is stored in `configs/unfrozen_attention.json`. Outputs are under
+`results/unfrozen_attention_grid/`, and exported summaries and confusion
+matrices are under `results/unfrozen_attention_grid_analysis/`. Every run saves
+the base-first `classifier.pt` as well as `classifier_best_tone.pt` and
+`classifier_best_joint.pt`. The latter two support checkpoint-selection audits
+without retraining.
+
+### Attention results
+
+The table reports the primary base-first checkpoint. “External” means the other
+speaker, while Oli remains a separate learner evaluation with no tone labels.
+
+| Training speaker | Pooling | Silence augmentation | Validation base | External base | External tone | External joint | Oli base |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Abe | attentive global | no | 72.26% | 26.32% | 55.64% | 14.92% | 11.19% |
+| Abe | attentive global | yes | 72.75% | 32.96% | 64.57% | 19.39% | 11.43% |
+| Abe | ordered 8-head | no | 68.37% | 23.62% | 61.40% | 14.86% | 11.19% |
+| Abe | ordered 8-head | yes | 73.24% | 32.67% | **68.04%** | 22.09% | 12.86% |
+| Abe | combined | no | **79.32%** | 24.79% | 54.29% | 12.57% | **13.81%** |
+| Abe | combined | yes | 74.94% | **37.13%** | 62.57% | **24.50%** | 12.86% |
+| Yue | attentive global | no | 38.20% | 15.48% | **52.40%** | 8.81% | 1.67% |
+| Yue | attentive global | yes | 43.55% | 17.92% | 46.79% | 8.85% | 1.90% |
+| Yue | ordered 8-head | no | 47.93% | 9.56% | 38.75% | 4.50% | 1.67% |
+| Yue | ordered 8-head | yes | **52.80%** | 10.01% | 45.54% | 5.38% | 1.90% |
+| Yue | combined | no | 46.23% | 11.77% | 45.83% | 5.83% | 1.90% |
+| Yue | combined | yes | 52.07% | **22.04%** | 50.33% | **12.39%** | **3.81%** |
+
+Silence augmentation produced the following external changes in percentage
+points:
+
+| Training speaker | Pooling | Base change | Tone change | Joint change |
+| --- | --- | ---: | ---: | ---: |
+| Abe | attentive global | +6.64 | +8.93 | +4.47 |
+| Abe | ordered 8-head | +9.05 | +6.64 | +7.23 |
+| Abe | combined | **+12.34** | +8.28 | **+11.93** |
+| Yue | attentive global | +2.44 | -5.60 | +0.04 |
+| Yue | ordered 8-head | +0.45 | +6.78 | +0.88 |
+| Yue | combined | **+10.27** | +4.50 | **+6.56** |
+
+Across the six paired comparisons, augmentation improved external base by an
+average of 6.86 points, tone by 4.92, and joint accuracy by 5.52. The
+Yue-trained attentive-global tone result is the main exception. The augmented
+combined model offers the best end-to-end base/joint compromise, while the
+Abe-trained augmented ordered model gives the highest cross-speaker tone
+accuracy.
+
+Compared with endpointed fixed 8-bin pooling, Abe-trained augmented ordered
+attention improves external base from 24.38% to 32.67%, tone from 67.74% to
+68.04%, and joint accuracy from 17.33% to 22.09%. This supports learned temporal
+weighting beyond silence removal alone. Explicit endpointed global pooling
+nevertheless remains the strongest Abe-trained base/joint model at 42.13% and
+27.91%.
+
+The attention heads remain correctly ordered, with typical empirical centers
+near `0.24, 0.31, 0.39, 0.44, 0.52, 0.62, 0.72, 0.79`. Their learned widths are
+approximately 0.19--0.24 of the recording, so they form a broad, overlapping
+temporal basis rather than eight sharply discovered phonetic segments or a
+latent hard VAD. Oli performance also remains low; the best attention result of
+13.81% does not exceed the earlier untrimmed-global result of 14.29%.
+
+Finally, selecting solely by same-speaker validation tone is not useful for the
+Yue models: tone often reaches 100% in early epochs while base accuracy remains
+near zero. Base-first selection remains the primary criterion, and the saved
+alternative checkpoints are diagnostic rather than preferred models.

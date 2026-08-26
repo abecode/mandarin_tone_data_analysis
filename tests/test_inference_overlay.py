@@ -40,6 +40,16 @@ class InferenceOverlayTest(unittest.TestCase):
         self.assertEqual(temporal8.frame_project[1].out_features, 128)
         self.assertEqual(temporal16.frame_project[1].out_features, 64)
 
+    def test_attention_models_share_classifier_dimension(self) -> None:
+        models = [
+            FineTuneModel(TinyEncoder(), pooling, bases=10, dropout=0.2)
+            for pooling in ("attentive_global", "ordered8", "attentive_combined")
+        ]
+
+        self.assertTrue(all(model.base_head.in_features == 256 for model in models))
+        self.assertEqual(models[1].ordered_attention.heads, 8)
+        self.assertEqual(models[2].ordered_attention.heads, 8)
+
     def test_overlay_changes_only_trainable_parameters(self) -> None:
         model = TinyModel()
         frozen_before = model.frozen.weight.detach().clone()

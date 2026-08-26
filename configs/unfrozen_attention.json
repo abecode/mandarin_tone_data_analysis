@@ -1,0 +1,16 @@
+{
+  "attention_diversity_weight": 0.01,
+  "attention_ordering_weight": 0.01,
+  "batch_size": 8,
+  "dropout": 0.2,
+  "encoder_learning_rate": 0.00001,
+  "epochs": 40,
+  "gradient_accumulation": 4,
+  "head_learning_rate": 0.0005,
+  "maximum_silence_ms": 500,
+  "minimum_epochs": 15,
+  "patience": 6,
+  "seed": 20260821,
+  "tone_loss_weight": 1.0,
+  "unfreeze_layers": 4
+}
