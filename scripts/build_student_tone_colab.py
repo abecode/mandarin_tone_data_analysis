@@ -81,6 +81,7 @@ def main() -> None:
             import getpass
             import math
             import random
+            import zipfile
             from collections import defaultdict
             from pathlib import Path
 
@@ -91,7 +92,7 @@ def main() -> None:
             import soundfile as sf
             import torch
             import torch.nn.functional as F
-            from huggingface_hub import snapshot_download
+            from huggingface_hub import hf_hub_download
             from scipy.signal import resample_poly
             from sklearn.metrics import ConfusionMatrixDisplay, accuracy_score
             from sklearn.model_selection import train_test_split
@@ -121,8 +122,9 @@ def main() -> None:
         code(
             """
             REPO_ID = "abecode/mandarin_isolated_syllables"
-            REVISION = "v0.1.0"  # Use "main" before the first tag exists.
+            REVISION = "v0.1.1"  # Use "main" before this tag exists.
             LOCAL_DATASET = Path("/content/mandarin_isolated_syllables")
+            ARCHIVE_NAME = "mandarin_isolated_syllables_v0.1.1.zip"
 
             try:
                 from google.colab import userdata
@@ -132,13 +134,21 @@ def main() -> None:
             if not HF_TOKEN:
                 HF_TOKEN = getpass.getpass("Hugging Face read token: ")
 
-            snapshot_download(
+            archive_path = hf_hub_download(
                 repo_id=REPO_ID,
                 repo_type="dataset",
+                filename=ARCHIVE_NAME,
                 revision=REVISION,
                 token=HF_TOKEN,
-                local_dir=LOCAL_DATASET,
             )
+            LOCAL_DATASET.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(archive_path) as archive:
+                root = LOCAL_DATASET.resolve()
+                for member in archive.infolist():
+                    destination = (root / member.filename).resolve()
+                    if not destination.is_relative_to(root):
+                        raise ValueError(f"Unsafe archive path: {member.filename}")
+                archive.extractall(LOCAL_DATASET)
 
             metadata = pd.read_csv(LOCAL_DATASET / "data" / "metadata.csv")
             metadata["audio_path"] = metadata["file_name"].map(
@@ -158,13 +168,14 @@ def main() -> None:
             same representation in training and validation. The primary test is
             stronger: every speaker-2 recording is excluded from training.
 
-            `CLASSROOM_MODE=True` limits examples to keep a typical Colab
-            session manageable. Set it to `False` for the complete experiment.
+            The notebook uses the complete dataset by default. Set
+            `CLASSROOM_MODE=True` only when demonstrating on a CPU runtime or
+            when a shorter fallback run is needed.
             """
         ),
         code(
             """
-            CLASSROOM_MODE = True
+            CLASSROOM_MODE = False
             MAX_TRAIN = 1600
             MAX_VALIDATION = 400
             MAX_TEST = 800
